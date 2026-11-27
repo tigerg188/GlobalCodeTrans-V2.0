@@ -46,20 +46,24 @@ function dataUrlToUint8Array(dataUrl: string): { bytes: Uint8Array; type: 'png' 
   }
 }
 
-async function getScaledImageDimensions(
+/**
+ * Computes Word page layout display dimensions (in CSS px / pt-equivalent for ImageRun.transformation)
+ * WITHOUT downsampling the embedded full-resolution image byte stream.
+ */
+async function getWordLayoutDimensions(
   dataUrl: string,
-  maxWidthPx = 480
+  maxDisplayWidth = 520
 ): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const w = img.naturalWidth || 320;
       const h = img.naturalHeight || 180;
-      if (w <= maxWidthPx) {
+      if (w <= maxDisplayWidth) {
         resolve({ width: w, height: h });
       } else {
-        const ratio = maxWidthPx / w;
-        resolve({ width: maxWidthPx, height: Math.max(24, Math.round(h * ratio)) });
+        const ratio = maxDisplayWidth / w;
+        resolve({ width: maxDisplayWidth, height: Math.max(24, Math.round(h * ratio)) });
       }
     };
     img.onerror = () => resolve({ width: 320, height: 180 });
@@ -155,11 +159,13 @@ async function buildObjectBlocks(
   const tgtText = obj.translatedText?.trim() || '';
 
   // 1. Visual objects (Image, CAD, Flowchart, Diagram, Chart, Formula image crop)
-  const hasReconstructed = Boolean(obj.reconstructedImageDataUrl);
+  // C-strategy rule: only use experimental reconstructedImageDataUrl as primary replacement if explicitly APPROVED by user.
+  const hasApprovedReconstruction =
+    Boolean(obj.reconstructedImageDataUrl) && obj.review.reviewStatus === 'APPROVED';
   const shouldEmbedVisual =
-    (Boolean(obj.rawImageDataUrl) || hasReconstructed) &&
+    (Boolean(obj.rawImageDataUrl) || hasApprovedReconstruction) &&
     (obj.strategy === ReconstructionStrategy.C_PRESERVE_ORIGINAL ||
-      hasReconstructed ||
+      hasApprovedReconstruction ||
       obj.objectType === ObjectType.FORMULA ||
       obj.objectType === ObjectType.CHART ||
       obj.objectType === ObjectType.PLOT ||
@@ -168,7 +174,7 @@ async function buildObjectBlocks(
       obj.objectType === ObjectType.FLOWCHART ||
       obj.objectType === ObjectType.IMAGE);
 
-  const pushImageParagraph = async (dataUrl: string, maxW: number, label?: string) => {
+  const pushImageParagraph = async (dataUrl: string, maxLayoutW: number, label?: string) => {
     const decoded = dataUrlToUint8Array(dataUrl);
     if (!decoded) return;
     if (label) {
@@ -186,7 +192,7 @@ async function buildObjectBlocks(
         })
       );
     }
-    const dims = await getScaledImageDimensions(dataUrl, maxW);
+    const dims = await getWordLayoutDimensions(dataUrl, maxLayoutW);
     blocks.push(
       new Paragraph({
         spacing: { before: 40, after: 80 },
@@ -202,18 +208,18 @@ async function buildObjectBlocks(
   };
 
   if (shouldEmbedVisual) {
-    const maxImgW = obj.objectType === ObjectType.FORMULA ? 340 : 540;
-    if (hasReconstructed && obj.reconstructedImageDataUrl) {
+    const maxLayoutW = obj.objectType === ObjectType.FORMULA ? 340 : 520;
+    if (hasApprovedReconstruction && obj.reconstructedImageDataUrl) {
       await pushImageParagraph(
         obj.reconstructedImageDataUrl,
-        maxImgW,
-        mode === 'target_only' ? undefined : '【译文重建图表（全图结构化重绘）】'
+        maxLayoutW,
+        mode === 'target_only' ? undefined : '【译文重建图表（已批准整图重绘）】'
       );
       if (mode !== 'target_only' && obj.rawImageDataUrl) {
-        await pushImageParagraph(obj.rawImageDataUrl, maxImgW, '【原始图表证据对照】');
+        await pushImageParagraph(obj.rawImageDataUrl, maxLayoutW, '【原始图表证据对照】');
       }
     } else if (obj.rawImageDataUrl) {
-      await pushImageParagraph(obj.rawImageDataUrl, maxImgW);
+      await pushImageParagraph(obj.rawImageDataUrl, maxLayoutW);
     }
   }
 
@@ -257,7 +263,7 @@ async function buildObjectBlocks(
   if (
     (obj.objectType === ObjectType.CHART || obj.objectType === ObjectType.PLOT) &&
     obj.chartData &&
-    (!hasReconstructed || mode === 'bilingual_review')
+    (!hasApprovedReconstruction || mode === 'bilingual_review')
   ) {
     const lines = [
       obj.chartData.translatedTitle || obj.chartData.title
@@ -281,13 +287,13 @@ async function buildObjectBlocks(
     }
   }
 
-  // 5. CAD / Engineering drawing peripheral labels (only in review mode or when visual reconstruction unavailable)
+  // 5. CAD / Engineering drawing peripheral labels (only in review mode or when approved visual reconstruction unavailable)
   if (
     (obj.objectType === ObjectType.CAD_DRAWING ||
       obj.objectType === ObjectType.DIAGRAM ||
       obj.objectType === ObjectType.FLOWCHART) &&
     obj.cadData?.peripheralLabels?.length &&
-    (mode === 'bilingual_review' || !hasReconstructed)
+    (mode === 'bilingual_review' || !hasApprovedReconstruction)
   ) {
     const srcLabels = obj.cadData.peripheralLabels;
     const tgtLabels = obj.cadData.translatedPeripheralLabels || [];
@@ -307,7 +313,7 @@ async function buildObjectBlocks(
   if (
     obj.objectType !== ObjectType.TABLE &&
     (srcText || tgtText) &&
-    !(hasReconstructed && isDiagramObject && mode !== 'bilingual_review')
+    !(hasApprovedReconstruction && isDiagramObject && mode !== 'bilingual_review')
   ) {
     const isHeading = obj.objectType === ObjectType.HEADING;
     if (mode === 'target_only') {

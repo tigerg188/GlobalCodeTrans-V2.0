@@ -87,6 +87,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isVerifyingRegion, setIsVerifyingRegion] = useState(false);
   const [translatingObjectId, setTranslatingObjectId] = useState<string | null>(null);
+  const [reconstructingObjectId, setReconstructingObjectId] = useState<string | null>(null);
   const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
 
   const [terminology, setTerminology] = useState<TerminologyEntry[]>([]);
@@ -180,6 +181,41 @@ export default function App() {
       prev.map((s) => (s.document.documentId === documentId ? updater(s) : s))
     );
   };
+
+  const ensurePreviewForPage = async (pageIndex: number) => {
+    const sess = sessions.find((s) => s.document.documentId === activeDocId);
+    if (!sess || !sess.pdfHandle) return;
+    const targetPage = sess.document.pages[pageIndex];
+    if (!targetPage || targetPage.renderInfo.previewDataUrl) return;
+    try {
+      const updatedPage = await documentPipeline.ensurePagePreview(
+        targetPage,
+        sess.pdfHandle,
+        1.5
+      );
+      if (!updatedPage.renderInfo.previewDataUrl) return;
+      updateSession(sess.document.documentId, (prev) => ({
+        ...prev,
+        document: {
+          ...prev.document,
+          pages: prev.document.pages.map((p, idx) =>
+            idx === pageIndex ? updatedPage : p
+          ),
+        },
+      }));
+    } catch {
+      // Non-fatal: preview will render during processing
+    }
+  };
+
+  useEffect(() => {
+    if (!activeSession?.pdfHandle) return;
+    const targetPage = activeSession.document.pages[currentPageIndex];
+    if (targetPage && !targetPage.renderInfo.previewDataUrl) {
+      ensurePreviewForPage(currentPageIndex);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDocId, currentPageIndex, activeSession?.pdfHandle]);
 
   const handleImportFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
@@ -289,7 +325,7 @@ export default function App() {
         updateSession(docId, (s) => ({ ...s, task: workingTask }));
 
         try {
-          const { page, newEvidences, logs } = await documentPipeline.processSinglePage(
+          const { page, newEvidences, newRelations, logs } = await documentPipeline.processSinglePage(
             workingDoc,
             workingTask,
             i,
@@ -299,10 +335,17 @@ export default function App() {
           );
 
           const nextPages = workingDoc.pages.map((p, idx) => (idx === i ? page : p));
+          const mergedRelations = [
+            ...workingDoc.relations.filter(
+              (r) => !newRelations.some((nr) => nr.relationId === r.relationId)
+            ),
+            ...newRelations,
+          ];
           workingDoc = {
             ...workingDoc,
             pages: nextPages,
             evidences: { ...workingDoc.evidences, ...newEvidences },
+            relations: mergedRelations,
             updatedAt: new Date().toISOString(),
             status: 'ANALYZED',
           };
@@ -350,6 +393,7 @@ export default function App() {
 
       const finalQuality = qualityGateService.evaluateDocument(workingDoc);
       const hasFailedPages = workingDoc.pages.some((p) => p.parseStatus === 'FAILED');
+      const hasErrors = hasFailedPages || finalQuality.errorCount > 0;
 
       workingDoc = {
         ...workingDoc,
@@ -358,8 +402,11 @@ export default function App() {
       };
       workingTask = {
         ...documentPipeline.refreshTaskMetrics(workingDoc, workingTask),
-        status: hasFailedPages ? 'PARTIAL_ERROR' : 'COMPLETED',
-        currentStage: finalQuality.needsReviewCount > 0 ? TaskStage.READY_FOR_REVIEW : TaskStage.COMPLETED,
+        status: hasErrors ? 'PARTIAL_ERROR' : 'COMPLETED',
+        currentStage:
+          finalQuality.needsReviewCount > 0 || finalQuality.errorCount > 0
+            ? TaskStage.READY_FOR_REVIEW
+            : TaskStage.COMPLETED,
       };
 
       updateSession(docId, (s) => ({
@@ -369,10 +416,12 @@ export default function App() {
       }));
 
       setBannerMessage({
-        type: hasFailedPages ? 'error' : 'success',
+        type: hasErrors ? 'error' : 'success',
         text: hasFailedPages
           ? `任务部分完成：存在页面解析或翻译错误，请查看底部状态与右侧日志。`
-          : `全文档处理完成（共 ${workingDoc.pageCount} 页，${finalQuality.translatedObjectCount} 个对象已翻译，${finalQuality.needsReviewCount} 项待人工核对）。`,
+          : finalQuality.errorCount > 0
+            ? `处理完成，但质量检查发现 ${finalQuality.errorCount} 项数值/表格结构异常（${finalQuality.needsReviewCount} 项待审校），请点击右下角或「质量检查」核对。`
+            : `全文档处理完成（共 ${workingDoc.pageCount} 页，${finalQuality.translatedObjectCount} 个对象已翻译，${finalQuality.needsReviewCount} 项待人工核对）。`,
       });
     } finally {
       setIsProcessing(false);
@@ -390,7 +439,7 @@ export default function App() {
         targetPage?.parseStatus === 'TRANSLATED' ||
         activeSession.task.targetLanguage !== targetLanguage;
 
-      const { page, newEvidences, logs } = await documentPipeline.processSinglePage(
+      const { page, newEvidences, newRelations, logs } = await documentPipeline.processSinglePage(
         activeSession.document,
         { ...activeSession.task, sourceLanguage, targetLanguage, domainHint },
         pageIndex,
@@ -399,10 +448,18 @@ export default function App() {
         forceRetranslate
       );
 
+      const mergedRelations = [
+        ...activeSession.document.relations.filter(
+          (r) => !newRelations.some((nr) => nr.relationId === r.relationId)
+        ),
+        ...newRelations,
+      ];
+
       const nextDoc: DocumentIR = {
         ...activeSession.document,
         pages: activeSession.document.pages.map((p, idx) => (idx === pageIndex ? page : p)),
         evidences: { ...activeSession.document.evidences, ...newEvidences },
+        relations: mergedRelations,
         updatedAt: new Date().toISOString(),
       };
       const nextTask = documentPipeline.refreshTaskMetrics(nextDoc, {
@@ -516,6 +573,34 @@ export default function App() {
         type: 'error',
         text: `图表重绘失败：${err instanceof Error ? err.message : String(err)}`,
       });
+    }
+  };
+
+  const handleExperimentalReconstruct = async (pageIndex: number, objectId: string) => {
+    if (!activeSession || reconstructingObjectId) return;
+    setReconstructingObjectId(objectId);
+    setBannerMessage(null);
+    try {
+      const updated = await documentPipeline.runExperimentalDiagramReconstruction(
+        activeSession.document,
+        pageIndex,
+        objectId,
+        { sourceLanguage, targetLanguage, domainHint },
+        terminology
+      );
+      handleUpdateObject(objectId, () => updated);
+      setBannerMessage({
+        type: 'info',
+        text: '已生成试验性重绘图，请对照原图核对并点击「确认通过」后方可在导出中替换原图。',
+      });
+    } catch (err) {
+      setBannerMessage({
+        type: 'error',
+        text: `试验性图表重绘失败：${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setReconstructingObjectId(null);
+      refreshModelDashboard();
     }
   };
 
@@ -1006,6 +1091,7 @@ export default function App() {
           onToggleBoxes={() => setShowBoxes((v) => !v)}
           onViewModeChange={setCenterViewMode}
           onReprocessPage={handleReprocessPage}
+          onEnsurePagePreview={ensurePreviewForPage}
           onImportFile={() => fileInputRef.current?.click()}
           isProcessing={isProcessing}
         />
@@ -1021,12 +1107,14 @@ export default function App() {
           onDeepVerifyObject={handleDeepVerifyObject}
           onTranslateObject={handleTranslateSingleObject}
           onRebuildDiagram={handleRebuildDiagram}
+          onExperimentalReconstruct={handleExperimentalReconstruct}
           onJumpToObject={(pIdx, objId) => {
             setCurrentPageIndex(pIdx);
             setSelectedObjectId(objId);
           }}
           isVerifyingRegion={isVerifyingRegion}
           translatingObjectId={translatingObjectId}
+          reconstructingObjectId={reconstructingObjectId}
         />
       </main>
 

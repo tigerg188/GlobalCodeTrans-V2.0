@@ -168,8 +168,11 @@ export function extractOverlaysFromSpec(spec: DiagramReconstructionSpec): Diagra
     push('ep_title', spec.title);
     spec.scaleLines.forEach((s, i) => push(`ep_scale_${i}`, s));
     push('ep_datum', spec.datumLabel);
+    spec.stations.forEach((st, i) => push(`ep_station_${i}`, st.label));
+    spec.verticalDiffs.forEach((vd, i) => push(`ep_vd_${i}`, vd.text));
     spec.bands.forEach((band, bIdx) => {
       push(`ep_band_${bIdx}_title`, band.rowTitle);
+      (band.cells || []).forEach((cell, cIdx) => push(`ep_band_${bIdx}_cell_${cIdx}`, cell.text));
       (band.curveSegments || []).forEach((seg, sIdx) => {
         (seg.topLabels || []).forEach((lbl, lIdx) =>
           push(`ep_band_${bIdx}_seg_${sIdx}_top_${lIdx}`, lbl)
@@ -222,8 +225,11 @@ export function applyOverlaysToSpec(
     upd('ep_title', clone.title);
     clone.scaleLines.forEach((s, i) => upd(`ep_scale_${i}`, s));
     upd('ep_datum', clone.datumLabel);
+    clone.stations.forEach((st, i) => upd(`ep_station_${i}`, st.label));
+    clone.verticalDiffs.forEach((vd, i) => upd(`ep_vd_${i}`, vd.text));
     clone.bands.forEach((band, bIdx) => {
       upd(`ep_band_${bIdx}_title`, band.rowTitle);
+      (band.cells || []).forEach((cell, cIdx) => upd(`ep_band_${bIdx}_cell_${cIdx}`, cell.text));
       (band.curveSegments || []).forEach((seg, sIdx) => {
         (seg.topLabels || []).forEach((lbl, lIdx) =>
           upd(`ep_band_${bIdx}_seg_${sIdx}_top_${lIdx}`, lbl)

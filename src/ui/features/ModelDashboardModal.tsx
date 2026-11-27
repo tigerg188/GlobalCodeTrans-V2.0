@@ -98,7 +98,7 @@ export const ModelDashboardModal: React.FC<ModelDashboardModalProps> = ({
               className="text-sm font-semibold text-slate-900"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              免费大模型全量配置与当日调用额度看板
+              模型目录与本应用当日调用统计看板
             </h2>
             {dashboard && (
               <span className="text-xs text-slate-500 font-mono tabular-nums">
@@ -168,7 +168,7 @@ export const ModelDashboardModal: React.FC<ModelDashboardModalProps> = ({
         {/* Honest Quota Explanation + Test Result */}
         <div className="px-5 py-2.5 border-b border-slate-200 bg-white space-y-2 shrink-0">
           <p className="text-[11px] text-slate-600 leading-relaxed">
-            说明：已全量收录当前环境下免费层级可调用的 Gemini 模型（已排除需付费 API Key 的模型）。调用次数、成功/失败数与 Token 消耗均为本服务当日真实记录；因标准 API Key 不提供远程剩余配额查询接口，每日额度上限为本地参考值（支持点击上限数字自定义调整）。当主模型高负载（503）或限流（429）时，可即时切换至 <span className="font-mono text-slate-800">gemini-3.1-flash-lite</span>。
+            说明：已按当前服务端配置收录参考模型目录（仅文档流水线模型支持在本看板实测连通性，其余专用模态为仅预留配置、未实测连通）。调用次数、成功/失败数与 Token 消耗为本应用当日真实调用统计；因标准 API Key 不提供远程剩余配额查询接口，每日额度上限为本地参考限额（支持点击「改限额」调整本地参考差额阈值）。当主模型高负载（503）或限流（429）时，可切换或自动回退至 <span className="font-mono text-slate-800">gemini-3.1-flash-lite</span>。
           </p>
           {testNotice && (
             <div
@@ -199,7 +199,7 @@ export const ModelDashboardModal: React.FC<ModelDashboardModalProps> = ({
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
                     <th className="px-3 py-2.5 text-left font-semibold">模型标识与模态</th>
                     <th className="px-3 py-2.5 text-left font-semibold">职责与工作台适配</th>
-                    <th className="px-3 py-2.5 text-left font-semibold w-52">当日调用额度（本地实时记录）</th>
+                    <th className="px-3 py-2.5 text-left font-semibold w-52">本应用当日调用统计 / 本地参考限额</th>
                     <th className="px-3 py-2.5 text-right font-semibold">当日 Token (输入/输出)</th>
                     <th className="px-3 py-2.5 text-right font-semibold">最近延迟 / 状态</th>
                     <th className="px-3 py-2.5 text-right font-semibold">操作</th>
@@ -327,7 +327,7 @@ export const ModelDashboardModal: React.FC<ModelDashboardModalProps> = ({
                             </button>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-slate-400">预留专用模态</span>
+                          <span className="text-[11px] text-slate-400">仅预留配置（未实测连通）</span>
                         )}
                       </td>
                     </tr>

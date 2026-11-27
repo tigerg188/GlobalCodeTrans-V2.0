@@ -32,9 +32,11 @@ interface InspectorPaneProps {
   onDeepVerifyObject: (pageIndex: number, objectId: string) => Promise<void>;
   onTranslateObject?: (objectId: string) => Promise<void>;
   onRebuildDiagram?: (objectId: string) => Promise<void>;
+  onExperimentalReconstruct?: (pageIndex: number, objectId: string) => Promise<void>;
   onJumpToObject: (pageIndex: number, objectId: string) => void;
   isVerifyingRegion: boolean;
   translatingObjectId?: string | null;
+  reconstructingObjectId?: string | null;
 }
 
 export const InspectorPane: React.FC<InspectorPaneProps> = ({
@@ -47,9 +49,11 @@ export const InspectorPane: React.FC<InspectorPaneProps> = ({
   onDeepVerifyObject,
   onTranslateObject,
   onRebuildDiagram,
+  onExperimentalReconstruct,
   onJumpToObject,
   isVerifyingRegion,
   translatingObjectId,
+  reconstructingObjectId,
 }) => {
   const [activeTab, setActiveTab] = useState<InspectorTab>('object');
 
@@ -160,6 +164,11 @@ export const InspectorPane: React.FC<InspectorPaneProps> = ({
                     {selectedObject.bbox.y1.toFixed(1)}, {selectedObject.bbox.x2.toFixed(1)},{' '}
                     {selectedObject.bbox.y2.toFixed(1)}] pt
                   </div>
+                  {selectedObject.parentId && (
+                    <div className="text-[11px] text-blue-700 font-mono">
+                      隶属关联对象 (CONTAINS): {selectedObject.parentId}
+                    </div>
+                  )}
                   {selectedObject.needsReviewReason && (
                     <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
                       复核提示：{selectedObject.needsReviewReason}
@@ -170,24 +179,50 @@ export const InspectorPane: React.FC<InspectorPaneProps> = ({
                 {/* Original Crop Evidence */}
                 {selectedObject.rawImageDataUrl && (
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-semibold text-slate-700 flex items-center gap-1">
                         <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
                         原始区域裁剪证据
                       </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onDeepVerifyObject(selectedObject.pageIndex, selectedObject.objectId)
-                        }
-                        disabled={isVerifyingRegion}
-                        className="text-xs font-medium text-blue-700 hover:text-blue-800 flex items-center gap-1 disabled:opacity-40 cursor-pointer"
-                      >
-                        <RefreshCw
-                          className={`w-3 h-3 ${isVerifyingRegion ? 'animate-spin' : ''}`}
-                        />
-                        {isVerifyingRegion ? '重识别中...' : '局部视觉重识别'}
-                      </button>
+                      <div className="flex items-center gap-2.5">
+                        {onExperimentalReconstruct &&
+                          (selectedObject.objectType === ObjectType.CHART ||
+                            selectedObject.objectType === ObjectType.PLOT ||
+                            selectedObject.objectType === ObjectType.CAD_DRAWING ||
+                            selectedObject.objectType === ObjectType.DIAGRAM ||
+                            selectedObject.objectType === ObjectType.FLOWCHART) && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onExperimentalReconstruct(
+                                  selectedObject.pageIndex,
+                                  selectedObject.objectId
+                                )
+                              }
+                              disabled={reconstructingObjectId === selectedObject.objectId}
+                              className="text-[11px] font-medium text-violet-700 hover:text-violet-800 flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                              title="C策略默认保留原图；仅作试验性结构化重绘参考，需点击确认通过后才用于导出替代"
+                            >
+                              <Languages className="w-3 h-3" />
+                              {reconstructingObjectId === selectedObject.objectId
+                                ? '重绘中...'
+                                : '试验性整图重绘'}
+                            </button>
+                          )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onDeepVerifyObject(selectedObject.pageIndex, selectedObject.objectId)
+                          }
+                          disabled={isVerifyingRegion}
+                          className="text-xs font-medium text-blue-700 hover:text-blue-800 flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                        >
+                          <RefreshCw
+                            className={`w-3 h-3 ${isVerifyingRegion ? 'animate-spin' : ''}`}
+                          />
+                          {isVerifyingRegion ? '重识别中...' : '局部视觉重识别'}
+                        </button>
+                      </div>
                     </div>
                     <div className="p-2 bg-slate-50 border border-slate-200 rounded flex justify-center">
                       <img
@@ -200,19 +235,21 @@ export const InspectorPane: React.FC<InspectorPaneProps> = ({
                   </div>
                 )}
 
-                {/* Reconstructed Translated Diagram Preview + Editable Overlays */}
+                {/* Experimental Reconstructed Translated Diagram Preview + Editable Overlays */}
                 {selectedObject.reconstructedImageDataUrl && (
                   <div className="space-y-2 p-2.5 bg-blue-50/40 border border-blue-200 rounded">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-semibold text-blue-800 flex items-center gap-1">
                         <Languages className="w-3.5 h-3.5" />
-                        译文重建图表（导出成果将使用此图）
+                        {selectedObject.review.reviewStatus === 'APPROVED'
+                          ? '译文重建图表（已批准，导出将使用此图）'
+                          : '试验性译文重绘图（未批准，导出仍默认保留原图）'}
                       </span>
                       {onRebuildDiagram && (
                         <button
                           type="button"
                           onClick={() => onRebuildDiagram(selectedObject.objectId)}
-                          className="text-[11px] font-medium text-blue-700 hover:underline flex items-center gap-1 cursor-pointer"
+                          className="text-[11px] font-medium text-blue-700 hover:underline flex items-center gap-1 cursor-pointer shrink-0"
                         >
                           <RefreshCw className="w-3 h-3" />
                           重新渲染图表

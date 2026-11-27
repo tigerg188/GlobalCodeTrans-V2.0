@@ -187,7 +187,7 @@ export interface ProfileBandCell {
   xStart?: number;
   xEnd?: number;
   xMeters?: number;
-  text: string;
+  text: TranslatedTextPair;
   color?: 'dark' | 'red' | 'blue';
 }
 
@@ -227,10 +227,10 @@ export interface EngineeringProfileSpec {
   yMax: number;
   yStep: number;
   totalLength: number;
-  stations: Array<{ label: string; xMeters: number }>;
+  stations: Array<{ label: TranslatedTextPair; xMeters: number }>;
   groundPoints: Array<{ xMeters: number; elevation: number }>;
   designPoints: Array<{ xMeters: number; elevation: number }>;
-  verticalDiffs: Array<{ xMeters: number; text: string }>;
+  verticalDiffs: Array<{ xMeters: number; text: TranslatedTextPair }>;
   bands: ProfileBandSpec[];
 }
 
@@ -356,6 +356,8 @@ export interface PageNativeStats {
   vectorLineCount: number;
   imageCount: number;
   coordinateRoundTripMaxErrorPt: number;
+  distinctCropBoxObserved?: boolean;
+  nativeFragmentBoxes?: Array<[number, number, number, number]>;
 }
 
 export interface PageIR {

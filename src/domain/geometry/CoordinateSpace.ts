@@ -192,6 +192,70 @@ export function computeBboxIoU(a: BoundingBox, b: BoundingBox): number {
   return union > 0 ? inter / union : 0;
 }
 
+export function computePdfTextItemUserBbox(
+  tx: [number, number, number, number, number, number],
+  itemWidth: number,
+  fontHeight: number
+): BoundingBox {
+  // tx = [a, b, c, d, e, f] maps glyph local space -> PDF_USER_SPACE:
+  // Baseline runs along (a, b); vertical ascender runs along (c, d).
+  const [a, b, c, d, e, f] = tx;
+  const xDirLen = Math.hypot(a, b);
+  const yDirLen = Math.hypot(c, d);
+
+  const ux = xDirLen > 1e-6 ? a / xDirLen : 1;
+  const uy = xDirLen > 1e-6 ? b / xDirLen : 0;
+  const vx = yDirLen > 1e-6 ? c / yDirLen : -uy;
+  const vy = yDirLen > 1e-6 ? d / yDirLen : ux;
+
+  const w = Math.max(1, itemWidth);
+  const h = Math.max(4, fontHeight);
+
+  // Compute all 4 corners of the rotated/skewed text glyph box in PDF_USER_SPACE
+  const corners: Point2D[] = [
+    { x: e, y: f },
+    { x: e + ux * w, y: f + uy * w },
+    { x: e + ux * w + vx * h, y: f + uy * w + vy * h },
+    { x: e + vx * h, y: f + vy * h },
+  ];
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  return createBbox(
+    Math.min(...xs),
+    Math.min(...ys),
+    Math.max(...xs),
+    Math.max(...ys),
+    CoordinateSpace.PDF_USER_SPACE
+  );
+}
+
+/**
+ * Independently cross-checks our buildUserToPageMatrix against PDF.js's own
+ * page.getViewport({ scale }).transform to measure true coordinate alignment error (pt),
+ * instead of testing a matrix only against its own algebraic inverse.
+ */
+export function verifyViewportCoordinateAlignment(
+  userBbox: BoundingBox,
+  cropBox: [number, number, number, number],
+  rotation: number,
+  pdfJsViewportTransform: AffineMatrix,
+  renderScale = 1
+): number {
+  const ourPageBbox = pdfUserToPageSpace(userBbox, cropBox, rotation);
+  const pdfJsViewportBbox = applyAffineToBbox(
+    pdfJsViewportTransform,
+    userBbox,
+    CoordinateSpace.VIEWPORT_SPACE
+  );
+  const invScale = renderScale > 0 ? 1 / renderScale : 1;
+  return Math.max(
+    Math.abs(ourPageBbox.x1 - pdfJsViewportBbox.x1 * invScale),
+    Math.abs(ourPageBbox.y1 - pdfJsViewportBbox.y1 * invScale),
+    Math.abs(ourPageBbox.x2 - pdfJsViewportBbox.x2 * invScale),
+    Math.abs(ourPageBbox.y2 - pdfJsViewportBbox.y2 * invScale)
+  );
+}
+
 export function verifyRoundTripErrorPt(
   bbox: BoundingBox,
   cropBox: [number, number, number, number],

@@ -19,6 +19,8 @@ const CHART_PALETTE = [
   '#DB2777',
 ];
 
+
+
 function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const paragraphs = (text || '').split(/\r?\n/);
   const lines: string[] = [];
@@ -179,6 +181,16 @@ function interpolatePolylineY(
   return points[points.length - 1].elevation;
 }
 
+function getPairStr(pair: unknown, fallback = ''): string {
+  if (!pair) return fallback;
+  if (typeof pair === 'string') return pair;
+  if (typeof pair === 'object' && pair !== null) {
+    const p = pair as { translated?: string; source?: string };
+    return p.translated || p.source || '';
+  }
+  return String(pair);
+}
+
 function normalizeBandSpans(
   cells: ProfileBandCell[],
   totalLength: number
@@ -187,13 +199,15 @@ function normalizeBandSpans(
   const hasExplicitBounds = cells.every(
     (c) => typeof c.xStart === 'number' && typeof c.xEnd === 'number' && c.xEnd > c.xStart
   );
+  const getTextStr = (c: ProfileBandCell) => getPairStr(c.text);
+
   if (hasExplicitBounds) {
     const maxEnd = Math.max(...cells.map((c) => c.xEnd as number), totalLength);
     const scale = maxEnd > 0 ? totalLength / maxEnd : 1;
     return cells.map((c) => ({
       xStart: (c.xStart as number) * scale,
       xEnd: (c.xEnd as number) * scale,
-      text: c.text,
+      text: getTextStr(c),
       color: c.color,
     }));
   }
@@ -211,13 +225,14 @@ function normalizeBandSpans(
           : idx < sorted.length - 1
             ? Math.max(xs + 1, sorted[idx + 1].xStart as number)
             : estEnd;
-      return { xStart: xs, xEnd: xe, text: c.text, color: c.color };
+      return { xStart: xs, xEnd: xe, text: getTextStr(c), color: c.color };
     });
   }
 
   // Try interpreting numeric cell texts as segment widths
   const parsedWidths = cells.map((c) => {
-    const n = Number(String(c.text).replace(',', '.').replace(/[^\d.-]/g, ''));
+    const rawStr = getTextStr(c);
+    const n = Number(rawStr.replace(',', '.').replace(/[^\d.-]/g, ''));
     return Number.isFinite(n) && n > 0 ? n : NaN;
   });
   if (parsedWidths.every((n) => !Number.isNaN(n))) {
@@ -226,7 +241,7 @@ function normalizeBandSpans(
     let cursor = 0;
     return cells.map((c, idx) => {
       const w = parsedWidths[idx] * scale;
-      const seg = { xStart: cursor, xEnd: cursor + w, text: c.text, color: c.color };
+      const seg = { xStart: cursor, xEnd: cursor + w, text: getTextStr(c), color: c.color };
       cursor += w;
       return seg;
     });
@@ -236,7 +251,7 @@ function normalizeBandSpans(
   return cells.map((c, idx) => ({
     xStart: idx * step,
     xEnd: (idx + 1) * step,
-    text: c.text,
+    text: getTextStr(c),
     color: c.color,
   }));
 }
@@ -416,15 +431,16 @@ function renderEngineeringProfile(spec: EngineeringProfileSpec): string {
       const dElev = interpolatePolylineY(designPts, vd.xMeters) ?? gElev;
       const midElev = (gElev + dElev) / 2;
       const py = Math.min(plotBaselineY - 40, Math.max(plotTop + 70, yOf(midElev)));
+      const vText = getPairStr(vd.text);
 
       ctx.save();
       ctx.translate(px + 12, py);
       ctx.rotate(-Math.PI / 2);
-      const tw = ctx.measureText(vd.text).width;
+      const tw = ctx.measureText(vText).width;
       ctx.fillStyle = 'rgba(255,255,255,0.88)';
       ctx.fillRect(-tw / 2 - 4, -10, tw + 8, 20);
       ctx.fillStyle = '#0F172A';
-      ctx.fillText(vd.text, 0, 0);
+      ctx.fillText(vText, 0, 0);
       ctx.restore();
     }
     ctx.restore();
@@ -576,7 +592,7 @@ function renderEngineeringProfile(spec: EngineeringProfileSpec): string {
           ctx.stroke();
           ctx.textAlign = idx === 0 ? 'left' : idx === sts.length - 1 ? 'right' : 'center';
           const tx = idx === 0 ? sx + 10 : idx === sts.length - 1 ? sx - 10 : sx;
-          ctx.fillText(st.label, tx, curY + rowH / 2);
+          ctx.fillText(getPairStr(st.label), tx, curY + rowH / 2);
         });
         ctx.restore();
       }
@@ -634,7 +650,7 @@ function renderEngineeringProfile(spec: EngineeringProfileSpec): string {
         ctx.rotate(-Math.PI / 2);
         ctx.fillStyle =
           cell.color === 'red' ? '#B91C1C' : cell.color === 'blue' ? '#1D4ED8' : '#0F172A';
-        ctx.fillText(cell.text, 0, 0, rowH - 12);
+        ctx.fillText(getPairStr(cell.text), 0, 0, rowH - 12);
         ctx.restore();
       }
       ctx.restore();

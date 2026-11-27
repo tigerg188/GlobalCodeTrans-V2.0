@@ -37,6 +37,7 @@ interface DocumentPreviewPaneProps {
   onToggleBoxes: () => void;
   onViewModeChange: (mode: CenterViewMode) => void;
   onReprocessPage: (pageIndex: number) => void;
+  onEnsurePagePreview?: (pageIndex: number) => void;
   onImportFile?: () => void;
   isProcessing: boolean;
 }
@@ -81,10 +82,11 @@ export const DocumentPreviewPane: React.FC<DocumentPreviewPaneProps> = ({
   onToggleBoxes,
   onViewModeChange,
   onReprocessPage,
+  onEnsurePagePreview,
   onImportFile,
   isProcessing,
 }) => {
-  const [showReconstructed, setShowReconstructed] = React.useState(true);
+  const [showReconstructed, setShowReconstructed] = React.useState(false);
   const page: PageIR | undefined = document?.pages[currentPageIndex];
   const hasReconstructedOnPage = Boolean(page?.objects.some((o) => Boolean(o.reconstructedImageDataUrl)));
 
@@ -222,7 +224,7 @@ export const DocumentPreviewPane: React.FC<DocumentPreviewPaneProps> = ({
               }`}
             >
               <Languages className="w-3.5 h-3.5" />
-              {showReconstructed ? '显示原图' : '显示译文重建图'}
+              {showReconstructed ? '切回原图' : '预览重绘图'}
             </button>
           )}
           {viewMode === 'overlay' && (
@@ -284,8 +286,17 @@ export const DocumentPreviewPane: React.FC<DocumentPreviewPaneProps> = ({
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
-                  暂无页面渲染图像
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-xs text-slate-500">
+                  <span>第 {currentPageIndex + 1} 页预览图按需渲染中...</span>
+                  {onEnsurePagePreview && (
+                    <button
+                      type="button"
+                      onClick={() => onEnsurePagePreview(currentPageIndex)}
+                      className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 cursor-pointer"
+                    >
+                      立即加载本页渲染预览
+                    </button>
+                  )}
                 </div>
               )}
 

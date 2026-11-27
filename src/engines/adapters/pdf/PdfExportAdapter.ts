@@ -437,12 +437,13 @@ async function renderObjectToPdfCanvas(
   const srcText = obj.rawText?.trim() || '';
   const tgtText = obj.translatedText?.trim() || '';
 
-  const hasReconstructed = Boolean(obj.reconstructedImageDataUrl);
+  const hasApprovedReconstruction =
+    Boolean(obj.reconstructedImageDataUrl) && obj.review.reviewStatus === 'APPROVED';
 
   const shouldEmbedVisual =
-    (Boolean(obj.rawImageDataUrl) || hasReconstructed) &&
+    (Boolean(obj.rawImageDataUrl) || hasApprovedReconstruction) &&
     (obj.strategy === ReconstructionStrategy.C_PRESERVE_ORIGINAL ||
-      hasReconstructed ||
+      hasApprovedReconstruction ||
       obj.objectType === ObjectType.FORMULA ||
       obj.objectType === ObjectType.CHART ||
       obj.objectType === ObjectType.PLOT ||
@@ -453,7 +454,7 @@ async function renderObjectToPdfCanvas(
 
   if (shouldEmbedVisual) {
     const imgWidth = obj.objectType === ObjectType.FORMULA ? 680 : CONTENT_W;
-    if (hasReconstructed && obj.reconstructedImageDataUrl) {
+    if (hasApprovedReconstruction && obj.reconstructedImageDataUrl) {
       if (mode === 'target_only') {
         await canvasDoc.drawImageBox(obj.reconstructedImageDataUrl, imgWidth);
       } else if (mode === 'bilingual_columns' && obj.rawImageDataUrl) {
@@ -461,11 +462,11 @@ async function renderObjectToPdfCanvas(
           obj.rawImageDataUrl,
           obj.reconstructedImageDataUrl,
           '【原图】',
-          '【译文重建图表】'
+          '【译文重建图表（已批准）】'
         );
       } else {
         canvasDoc.drawTextBlock({
-          text: '【译文重建图表（全图结构化重绘）】',
+          text: '【译文重建图表（已批准整图重绘）】',
           fontSize: 19,
           lineHeight: 26,
           color: '#1D4ED8',
@@ -521,7 +522,7 @@ async function renderObjectToPdfCanvas(
   if (
     (obj.objectType === ObjectType.CHART || obj.objectType === ObjectType.PLOT) &&
     obj.chartData &&
-    (!hasReconstructed || mode === 'bilingual_review')
+    (!hasApprovedReconstruction || mode === 'bilingual_review')
   ) {
     const lines = [
       obj.chartData.translatedTitle || obj.chartData.title
@@ -555,13 +556,13 @@ async function renderObjectToPdfCanvas(
     canvasDoc.drawSpacer(8);
   }
 
-  // Only render separate label dictionary table in review mode (or when visual reconstruction was unavailable)
+  // Only render separate label dictionary table in review mode (or when approved visual reconstruction was unavailable)
   if (
     (obj.objectType === ObjectType.CAD_DRAWING ||
       obj.objectType === ObjectType.DIAGRAM ||
       obj.objectType === ObjectType.FLOWCHART) &&
     obj.cadData?.peripheralLabels?.length &&
-    (mode === 'bilingual_review' || !hasReconstructed)
+    (mode === 'bilingual_review' || !hasApprovedReconstruction)
   ) {
     const srcLabels = obj.cadData.peripheralLabels;
     const tgtLabels = obj.cadData.translatedPeripheralLabels || [];
@@ -580,7 +581,7 @@ async function renderObjectToPdfCanvas(
   if (
     obj.objectType !== ObjectType.TABLE &&
     (srcText || tgtText) &&
-    !(hasReconstructed && isDiagramObject && mode !== 'bilingual_review')
+    !(hasApprovedReconstruction && isDiagramObject && mode !== 'bilingual_review')
   ) {
     const isHeading = obj.objectType === ObjectType.HEADING;
     if (mode === 'target_only') {

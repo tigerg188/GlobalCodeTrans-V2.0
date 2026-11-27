@@ -4,11 +4,13 @@ import {
   ObjectType,
   ReconstructionStrategy,
   RegionType,
+  RelationType,
   type DocumentIR,
   type DocumentObjectIR,
   type EvidenceIR,
   type PageIR,
   type RegionIR,
+  type RelationIR,
 } from '../../domain/document/DocumentIR';
 import {
   CoordinateSpace,
@@ -29,7 +31,9 @@ import {
 import {
   pdfJsAdapter,
   type LoadedPdfHandle,
+  type NativeOrganizedBlock,
   type NativeTextFragment,
+  type VectorSegment,
 } from '../../engines/adapters/pdfjs/PdfJsAdapter';
 import { diagramReconstructor } from '../../engines/adapters/geometry/DiagramReconstructor';
 import { protectionService } from '../services/ProtectionService';
@@ -202,10 +206,16 @@ export const documentPipeline = {
       const pdfHandle = await pdfJsAdapter.openPdf(buffer);
       const pages: PageIR[] = [];
 
-      // Preflight extract & render all pages (sequentially to keep memory predictable)
+      // Preflight native structure on all pages; render preview image ONLY for page 0 (on-demand for later pages)
       for (let i = 0; i < pdfHandle.pageCount; i++) {
         const pageId = `${documentId}_p${i + 1}`;
-        const native = await pdfJsAdapter.extractAndRenderPage(pdfHandle.proxy, i, pageId, 1.5);
+        const native = await pdfJsAdapter.extractAndRenderPage(
+          pdfHandle.proxy,
+          i,
+          pageId,
+          1.5,
+          i === 0
+        );
         pages.push({
           pageId,
           documentId,
@@ -231,7 +241,7 @@ export const documentPipeline = {
           'PdfJsAdapter',
           'preflightPages',
           'OK',
-          `PDF.js 原生预检完成：共 ${pdfHandle.pageCount} 页，已提取 MediaBox/CropBox、文本变换、矢量操作数与页面渲染图`,
+          `PDF.js 原生结构预检完成：共 ${pdfHandle.pageCount} 页（首页已渲染预览，其余页面按需渲染以节省内存）`,
           { engineId: 'pdfjs-native' }
         )
       );
@@ -352,6 +362,30 @@ export const documentPipeline = {
     }
   },
 
+  async ensurePagePreview(
+    page: PageIR,
+    pdfHandle?: LoadedPdfHandle,
+    scale = 1.5
+  ): Promise<PageIR> {
+    if (page.renderInfo.previewDataUrl || !pdfHandle) {
+      return page;
+    }
+    const rendered = await pdfJsAdapter.renderPagePreviewDataUrl(
+      pdfHandle.proxy,
+      page.pageIndex,
+      scale
+    );
+    return {
+      ...page,
+      renderInfo: {
+        renderScale: scale,
+        pixelWidth: rendered.pixelWidth,
+        pixelHeight: rendered.pixelHeight,
+        previewDataUrl: rendered.previewDataUrl,
+      },
+    };
+  },
+
   async processSinglePage(
     doc: DocumentIR,
     task: ProcessingTask,
@@ -359,7 +393,12 @@ export const documentPipeline = {
     terminology: TerminologyEntry[],
     pdfHandle?: LoadedPdfHandle,
     forceRetranslate = false
-  ): Promise<{ page: PageIR; newEvidences: Record<string, EvidenceIR>; logs: TaskLogEntry[] }> {
+  ): Promise<{
+    page: PageIR;
+    newEvidences: Record<string, EvidenceIR>;
+    newRelations: RelationIR[];
+    logs: TaskLogEntry[];
+  }> {
     const page = doc.pages[pageIndex];
     if (!page) {
       throw new Error(`页面索引 ${pageIndex} 不存在`);
@@ -367,6 +406,7 @@ export const documentPipeline = {
 
     const logs: TaskLogEntry[] = [];
     const newEvidences: Record<string, EvidenceIR> = {};
+    const newRelations: RelationIR[] = [];
 
     // Keep any user-approved/edited objects unless forceRetranslate is requested
     const approvedExisting = forceRetranslate
@@ -375,16 +415,21 @@ export const documentPipeline = {
           (o) => o.review.reviewStatus === 'APPROVED' || o.review.reviewStatus === 'EDITED'
         );
 
-    // 1. Gather native text fragments if PDF handle is available
+    // 1. Gather native text fragments, organized blocks & vector paths if PDF handle is available
     let nativeFragments: NativeTextFragment[] = [];
+    let organizedBlocks: NativeOrganizedBlock[] = [];
+    let vectorSegments: VectorSegment[] = [];
     if (doc.fileType === 'pdf' && pdfHandle) {
       const native = await pdfJsAdapter.extractAndRenderPage(
         pdfHandle.proxy,
         pageIndex,
         page.pageId,
-        1.6
+        1.6,
+        true
       );
       nativeFragments = native.textFragments;
+      organizedBlocks = native.organizedBlocks;
+      vectorSegments = native.vectorSegments;
       page.nativeStats = native.nativeStats;
       page.tags = native.tags;
       page.renderInfo = native.renderInfo;
@@ -567,6 +612,12 @@ export const documentPipeline = {
       };
       newEvidences[evidenceId] = evidence;
 
+      const vectorChartCal =
+        (objectType === ObjectType.CHART || objectType === ObjectType.PLOT) &&
+        vectorSegments.length > 0
+          ? pdfJsAdapter.calibrateChartFromVectors(vectorSegments, bboxPage, nativeFragments)
+          : null;
+
       const docObj: DocumentObjectIR = {
         objectId,
         pageId: page.pageId,
@@ -605,8 +656,10 @@ export const documentPipeline = {
                 xAxisLabel: item.xAxisLabel,
                 yAxisLabel: item.yAxisLabel,
                 legendItems: item.legendItems || [],
-                extractionMethod: 'MODEL_ESTIMATED',
+                extractionMethod: vectorChartCal ? 'NATIVE_VECTOR' : 'MODEL_ESTIMATED',
+                series: vectorChartCal?.series,
                 note:
+                  vectorChartCal?.note ||
                   item.chartNote ||
                   '视觉模型语义解析结果（非原生矢量精确采样），已保留原始图表图像供核验。',
               }
@@ -628,7 +681,9 @@ export const documentPipeline = {
           (objectType === ObjectType.FORMULA
             ? '数学公式需对照原图核验上下标与符号'
             : objectType === ObjectType.CHART
-              ? '图表坐标/图例为视觉估读，建议人工对照原图'
+              ? vectorChartCal
+                ? '已由 PDF 原生矢量轴标定提取曲线数据，仍建议对照原图核验'
+                : '图表坐标/图例为视觉估读，已按 C 策略保留原始图表'
               : objectType === ObjectType.CAD_DRAWING
                 ? '工程图已按 C 策略保留原始图形，仅处理外围标注'
                 : undefined),
@@ -651,45 +706,128 @@ export const documentPipeline = {
       });
     }
 
-    // Remove redundant TABLE objects subsumed inside a visual diagram (e.g. attached bottom profile band)
-    const diagramBoxes = objects
-      .filter(
-        (o) =>
-          o.objectType === ObjectType.CAD_DRAWING ||
-          o.objectType === ObjectType.CHART ||
-          o.objectType === ObjectType.PLOT ||
-          o.objectType === ObjectType.DIAGRAM ||
-          o.objectType === ObjectType.FLOWCHART
-      )
-      .map((o) => o.bbox);
+    // 3b. Promote any PDF.js organized native text blocks that Gemini missed so native PDF text is NEVER lost
+    let promotedNativeCount = 0;
+    if (organizedBlocks.length > 0) {
+      for (const blk of organizedBlocks) {
+        const blkArea = Math.max(1, blk.bboxPage.width * blk.bboxPage.height);
+        const alreadyCovered = objects.some((existing) => {
+          const ix1 = Math.max(existing.bbox.x1, blk.bboxPage.x1);
+          const iy1 = Math.max(existing.bbox.y1, blk.bboxPage.y1);
+          const ix2 = Math.min(existing.bbox.x2, blk.bboxPage.x2);
+          const iy2 = Math.min(existing.bbox.y2, blk.bboxPage.y2);
+          const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+          return inter / blkArea >= 0.45;
+        });
+        if (alreadyCovered) continue;
 
-    if (diagramBoxes.length > 0) {
-      const droppedTableIds = new Set<string>();
+        const objectId = `${page.pageId}_nat_${promotedNativeCount + 1}_${crypto.randomUUID().slice(0, 4)}`;
+        const regionId = `${page.pageId}_nat_reg_${promotedNativeCount + 1}`;
+        const evidenceId = `ev_${objectId}`;
+        const regionType = mapRegionType(blk.objectType);
+
+        newEvidences[evidenceId] = {
+          evidenceId,
+          sourceFile: doc.sourceFileName,
+          pageIndex,
+          bbox: blk.bboxPage,
+          rawContent: blk.rawText,
+          engineId: 'pdfjs-native-organizer',
+          engineVersion: 'pdfjs-dist@6.5',
+          parameters: { fontSize: blk.fontSize, lineCount: blk.lineCount },
+          timestamp: new Date().toISOString(),
+        };
+
+        const nativeObj: DocumentObjectIR = {
+          objectId,
+          pageId: page.pageId,
+          pageIndex,
+          objectType: blk.objectType,
+          regionType,
+          readingOrder: objects.length + 1,
+          bbox: blk.bboxPage,
+          sourceType: 'PDF_NATIVE',
+          sourceReference: 'PDF.js 原生文本版面组织（主链路补全未漏检）',
+          confidence: 0.96,
+          status: ObjectStatus.STRUCTURED,
+          strategy: ReconstructionStrategy.A_NATIVE,
+          rawText: blk.rawText,
+          elements: blk.elements.map((el) => ({ ...el, objectId })),
+          evidenceIds: [evidenceId],
+          qualityWarnings: [],
+          review: {
+            reviewStatus: 'UNREVIEWED',
+            reviewer: 'system',
+            reviewedAt: new Date().toISOString(),
+          },
+        };
+        objects.push(nativeObj);
+        regions.push({
+          regionId,
+          pageId: page.pageId,
+          regionType,
+          bbox: blk.bboxPage,
+          readingOrder: nativeObj.readingOrder,
+          objectIds: [objectId],
+        });
+        promotedNativeCount += 1;
+      }
+
+      if (promotedNativeCount > 0) {
+        objects.sort((a, b) => {
+          const dy = a.bbox.y1 - b.bbox.y1;
+          if (Math.abs(dy) > 10) return dy;
+          return a.bbox.x1 - b.bbox.x1;
+        });
+        objects.forEach((o, i) => {
+          o.readingOrder = i + 1;
+        });
+        logs.push(
+          this.createLog(
+            task.taskId,
+            TaskStage.NATIVE_PARSING,
+            'NativeTextOrganizer',
+            'promoteUncoveredBlocks',
+            'OK',
+            `第 ${pageIndex + 1} 页由 PDF.js 原生文本组织器补全入库 ${promotedNativeCount} 个文本对象（防止模型漏检）`,
+            { engineId: 'pdfjs-native', pageIndex }
+          )
+        );
+      }
+    }
+
+    // 3c. Preserve overlapping TABLEs & link via parentId + CONTAINS RelationIR (NEVER delete tables)
+    const diagramObjects = objects.filter(
+      (o) =>
+        o.objectType === ObjectType.CAD_DRAWING ||
+        o.objectType === ObjectType.CHART ||
+        o.objectType === ObjectType.PLOT ||
+        o.objectType === ObjectType.DIAGRAM ||
+        o.objectType === ObjectType.FLOWCHART
+    );
+
+    if (diagramObjects.length > 0) {
       for (const obj of objects) {
         if (obj.objectType !== ObjectType.TABLE) continue;
         const tArea = Math.max(1, obj.bbox.width * obj.bbox.height);
-        const subsumed = diagramBoxes.some((db) => {
-          const ix1 = Math.max(db.x1, obj.bbox.x1);
-          const iy1 = Math.max(db.y1, obj.bbox.y1);
-          const ix2 = Math.min(db.x2, obj.bbox.x2);
-          const iy2 = Math.min(db.y2, obj.bbox.y2);
+        const container = diagramObjects.find((db) => {
+          const ix1 = Math.max(db.bbox.x1, obj.bbox.x1);
+          const iy1 = Math.max(db.bbox.y1, obj.bbox.y1);
+          const ix2 = Math.min(db.bbox.x2, obj.bbox.x2);
+          const iy2 = Math.min(db.bbox.y2, obj.bbox.y2);
           const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
           return inter / tArea >= 0.55;
         });
-        if (subsumed) {
-          droppedTableIds.add(obj.objectId);
-        }
-      }
-      if (droppedTableIds.size > 0) {
-        for (let i = objects.length - 1; i >= 0; i--) {
-          if (droppedTableIds.has(objects[i].objectId)) {
-            objects.splice(i, 1);
-          }
-        }
-        for (let i = regions.length - 1; i >= 0; i--) {
-          if (regions[i].objectIds.some((id) => droppedTableIds.has(id))) {
-            regions.splice(i, 1);
-          }
+        if (container) {
+          obj.parentId = container.objectId;
+          newRelations.push({
+            relationId: `rel_${container.objectId}_${obj.objectId}`,
+            fromId: container.objectId,
+            toId: obj.objectId,
+            relationType: RelationType.CONTAINS,
+            confidence: 0.9,
+            evidenceIds: [...obj.evidenceIds],
+          });
         }
       }
     }
@@ -883,9 +1021,21 @@ export const documentPipeline = {
         }
 
         const sliceMap = new Map(slice.map((u) => [u.unitId, u]));
+        const returnedUnitIds = new Set<string>();
+        const duplicateUnitIds: string[] = [];
+        const unknownUnitIds: string[] = [];
+
         for (const tr of trResp.result.translations) {
           const meta = sliceMap.get(tr.id);
-          if (!meta) continue;
+          if (!meta) {
+            unknownUnitIds.push(tr.id);
+            continue;
+          }
+          if (returnedUnitIds.has(tr.id)) {
+            duplicateUnitIds.push(tr.id);
+          }
+          returnedUnitIds.add(tr.id);
+
           const obj = objMap.get(meta.objectId);
           if (!obj) continue;
 
@@ -929,110 +1079,119 @@ export const documentPipeline = {
           }
         }
 
-        logs.push(
-          this.createLog(
-            task.taskId,
-            TaskStage.TRANSLATING,
-            'GeminiTranslator',
-            'translateUnits',
-            'OK',
-            `第 ${pageIndex + 1} 页完成 ${slice.length} 个翻译单元专业翻译`,
-            {
-              engineId: 'gemini-translator',
-              pageIndex,
-              durationMs: trResp.durationMs,
-            }
-          )
-        );
-      }
-    }
-
-    // 5. In-Place Chart/Diagram Text Translation & Visual Reconstruction
-    for (const obj of objects) {
-      const shouldReconstructVisual =
-        Boolean(obj.rawImageDataUrl) &&
-        (obj.objectType === ObjectType.CAD_DRAWING ||
-          obj.objectType === ObjectType.CHART ||
-          obj.objectType === ObjectType.PLOT ||
-          obj.objectType === ObjectType.DIAGRAM ||
-          obj.objectType === ObjectType.FLOWCHART ||
-          obj.objectType === ObjectType.IMAGE);
-
-      if (!shouldReconstructVisual || !obj.rawImageDataUrl) continue;
-
-      try {
-        const recResp = await geminiAdapter.reconstructDiagram({
-          imageBase64: obj.rawImageDataUrl,
-          mimeType: 'image/jpeg',
-          sourceLanguage: task.sourceLanguage,
-          targetLanguage: task.targetLanguage,
-          domainHint: doc.metadata.inferredDomain || task.domainHint,
-          terminology: terminology.map((t) => ({
-            sourceTerm: t.sourceTerm,
-            targetTerm: t.targetTerm,
-          })),
-        });
-
-        if (recResp.diagramSpec) {
-          const rebuiltUrl = await diagramReconstructor.reconstructFromSpec(recResp.diagramSpec);
-          if (rebuiltUrl) {
-            obj.diagramSpec = recResp.diagramSpec;
-            obj.diagramOverlays = recResp.overlays;
-            obj.reconstructedImageDataUrl = rebuiltUrl;
-            obj.status = ObjectStatus.RECONSTRUCTED;
-
-            if (obj.cadData) {
-              obj.cadData.peripheralLabels = recResp.overlays.map((o) => o.sourceText);
-              obj.cadData.translatedPeripheralLabels = recResp.overlays.map((o) => o.translatedText);
-            }
-            if (obj.chartData && recResp.diagramTitle) {
-              obj.chartData.translatedTitle = recResp.diagramTitle;
-            }
-            if (!obj.translatedText && recResp.diagramSummary) {
-              obj.translatedText = recResp.diagramSummary;
-            }
-
-            logs.push(
-              this.createLog(
-                task.taskId,
-                TaskStage.TRANSLATING,
-                'DiagramReconstructor',
-                'reconstructDiagram',
-                'OK',
-                `第 ${pageIndex + 1} 页图表 [${obj.objectType}] 已按 ${recResp.diagramSpec.kind} 结构完成全图译文重绘（含 ${recResp.overlays.length} 处文字）`,
-                {
-                  engineId: 'gemini-vision-layout',
-                  pageIndex,
-                  durationMs: recResp.durationMs,
-                }
-              )
-            );
+        // Strict ID closure validation: flag any missing/duplicate/unknown unit IDs
+        const missingUnits = slice.filter((u) => !returnedUnitIds.has(u.unitId));
+        for (const mu of missingUnits) {
+          const obj = objMap.get(mu.objectId);
+          if (obj) {
+            obj.status = ObjectStatus.NEEDS_REVIEW;
+            obj.review.reviewStatus = 'NEEDS_REVIEW';
+            obj.qualityWarnings.push(`翻译单元 [${mu.unitId}] 未返回译文（请单段重试或人工补译）`);
           }
         }
-      } catch (recErr) {
-        logs.push(
-          this.createLog(
-            task.taskId,
-            TaskStage.TRANSLATING,
-            'DiagramReconstructor',
-            'reconstructDiagram',
-            'WARN',
-            `第 ${pageIndex + 1} 页图表原位重建失败，已保留高清原图：${recErr instanceof Error ? recErr.message : String(recErr)}`,
-            { pageIndex }
-          )
-        );
+
+        if (missingUnits.length > 0 || duplicateUnitIds.length > 0 || unknownUnitIds.length > 0) {
+          logs.push(
+            this.createLog(
+              task.taskId,
+              TaskStage.TRANSLATING,
+              'TranslationClosureGuard',
+              'verifyUnitIds',
+              'WARN',
+              `第 ${pageIndex + 1} 页翻译单元闭合校验异常：缺失 ${missingUnits.length}、重复 ${duplicateUnitIds.length}、未知 ID ${unknownUnitIds.length}`,
+              { engineId: 'gemini-translator', pageIndex, durationMs: trResp.durationMs }
+            )
+          );
+        } else {
+          logs.push(
+            this.createLog(
+              task.taskId,
+              TaskStage.TRANSLATING,
+              'GeminiTranslator',
+              'translateUnits',
+              'OK',
+              `第 ${pageIndex + 1} 页完成 ${slice.length} 个翻译单元专业翻译（ID 100% 闭合）`,
+              {
+                engineId: 'gemini-translator',
+                pageIndex,
+                durationMs: trResp.durationMs,
+              }
+            )
+          );
+        }
       }
     }
 
+    // 5. C-Strategy Fidelity Guard:
+    // Do NOT automatically reconstruct/replace CHART/PLOT/CAD_DRAWING/DIAGRAM/FLOWCHART/IMAGE.
+    // Visual reconstruction is strictly an explicit per-object experimental user action (runExperimentalDiagramReconstruction).
+    const allTranslatedCleanly = objects.every((o) => o.status !== ObjectStatus.NEEDS_REVIEW);
     const updatedPage: PageIR = {
       ...page,
       regions,
       objects,
-      parseStatus: 'TRANSLATED',
+      parseStatus: allTranslatedCleanly ? 'TRANSLATED' : 'VISION_ANALYZED',
       errorMessage: undefined,
     };
 
-    return { page: updatedPage, newEvidences, logs };
+    return { page: updatedPage, newEvidences, newRelations, logs };
+  },
+
+  async runExperimentalDiagramReconstruction(
+    doc: DocumentIR,
+    pageIndex: number,
+    objectId: string,
+    task: { sourceLanguage: string; targetLanguage: string; domainHint?: string },
+    terminology: TerminologyEntry[]
+  ): Promise<DocumentObjectIR> {
+    const page = doc.pages[pageIndex];
+    if (!page) throw new Error('页面不存在');
+    const targetObj = page.objects.find((o) => o.objectId === objectId);
+    if (!targetObj || !targetObj.rawImageDataUrl) {
+      throw new Error('该对象缺少原始图像，无法执行试验性图表重绘。');
+    }
+
+    const recResp = await geminiAdapter.reconstructDiagram({
+      imageBase64: targetObj.rawImageDataUrl,
+      mimeType: 'image/jpeg',
+      sourceLanguage: task.sourceLanguage,
+      targetLanguage: task.targetLanguage,
+      domainHint: doc.metadata.inferredDomain || task.domainHint,
+      terminology: terminology.map((t) => ({
+        sourceTerm: t.sourceTerm,
+        targetTerm: t.targetTerm,
+      })),
+    });
+
+    if (!recResp.diagramSpec) {
+      throw new Error('未能提取有效的结构化图表规范，已保留原始高分辨率图表。');
+    }
+
+    const rebuiltUrl = await diagramReconstructor.reconstructFromSpec(recResp.diagramSpec);
+    if (!rebuiltUrl) {
+      throw new Error('图表 Canvas 渲染返回空图像，已保留原始图表。');
+    }
+
+    const warningMsg =
+      '已生成试验性模型辅助重绘图（请对照原图核对曲线/数值并点击「批准通过」，否则导出仍默认采用原图）';
+    const nextWarnings = targetObj.qualityWarnings.includes(warningMsg)
+      ? targetObj.qualityWarnings
+      : [...targetObj.qualityWarnings, warningMsg];
+
+    return {
+      ...targetObj,
+      diagramSpec: recResp.diagramSpec,
+      diagramOverlays: recResp.overlays,
+      reconstructedImageDataUrl: rebuiltUrl,
+      status: ObjectStatus.NEEDS_REVIEW,
+      needsReviewReason: warningMsg,
+      qualityWarnings: nextWarnings,
+      review: {
+        ...targetObj.review,
+        reviewStatus: 'NEEDS_REVIEW',
+        reviewedAt: new Date().toISOString(),
+      },
+    };
   },
 
   async deepVerifyObject(

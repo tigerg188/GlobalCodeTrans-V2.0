@@ -59,8 +59,13 @@ export interface QualityCheckItem {
     | 'MISSING_TRANSLATION'
     | 'HIGH_RISK_SEMANTIC'
     | 'FORMULA_UNVERIFIED'
+    | 'FORMULA_INCOMPLETE'
     | 'CHART_ESTIMATED'
-    | 'CAD_PRESERVED';
+    | 'CAD_PRESERVED'
+    | 'TABLE_STRUCTURE_MISMATCH'
+    | 'NATIVE_TEXT_COVERAGE_LOW'
+    | 'DUPLICATE_OVERLAP'
+    | 'EXPERIMENTAL_RECONSTRUCTION_UNAPPROVED';
   severity: 'error' | 'warning' | 'info';
   message: string;
   objectId: string;

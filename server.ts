@@ -33,7 +33,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: true,
     defaultDailyQuotaLimit: 250,
     rpmReference: 10,
-    notes: '免费层级可用，支持 ThinkingLevel.LOW/HIGH；默认工作台主力模型',
+    notes: '工作台默认主力模型（支持 ThinkingLevel.LOW/MEDIUM；支持在看板实测连通性）',
   },
   {
     modelId: 'gemini-3.1-flash-lite',
@@ -43,7 +43,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: true,
     defaultDailyQuotaLimit: 1000,
     rpmReference: 15,
-    notes: '免费层级可用，配额较高且延迟低，主模型限流或 503 时可即时切换',
+    notes: '备选轻量模型，主模型限流或 503 时可自动回退或手动切换（支持实测连通性）',
   },
   {
     modelId: 'gemini-embedding-2',
@@ -53,7 +53,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 1500,
     rpmReference: 100,
-    notes: '免费层级可用；当前版本工作台尚未绑定该模态接口',
+    notes: '仅预留配置（未实测连通，当前工作台未接入向量嵌入接口）',
   },
   {
     modelId: 'gemini-decision-1',
@@ -63,7 +63,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 500,
     rpmReference: 15,
-    notes: '免费层级可用；需 ai.decisions.create 调用，当前工作台尚未接入',
+    notes: '仅预留配置（未实测连通，当前工作台未接入 ai.decisions.create）',
   },
   {
     modelId: 'gemini-3.5-transcribe',
@@ -73,7 +73,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 250,
     rpmReference: 10,
-    notes: '免费层级可用；音频模态，不用于 PDF/图像文档解析',
+    notes: '仅预留配置（未实测连通，音频模态不用于 PDF/图像文档解析）',
   },
   {
     modelId: 'gemini-3.8-flash-lite-tts',
@@ -83,7 +83,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 250,
     rpmReference: 10,
-    notes: '免费层级可用；语音输出模态',
+    notes: '仅预留配置（未实测连通，当前工作台未接入语音输出）',
   },
   {
     modelId: 'gemini-3.8-flash-tts',
@@ -93,7 +93,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 100,
     rpmReference: 5,
-    notes: '免费层级可用；语音输出模态',
+    notes: '仅预留配置（未实测连通，当前工作台未接入语音输出）',
   },
   {
     modelId: 'gemini-3.8-live',
@@ -103,7 +103,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 100,
     rpmReference: 5,
-    notes: '免费层级可用；WebSocket 实时流模态',
+    notes: '仅预留配置（未实测连通，WebSocket 实时流模态未接入）',
   },
   {
     modelId: 'gemini-3.8-live-extended-thinking',
@@ -113,7 +113,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 50,
     rpmReference: 3,
-    notes: '免费层级可用；WebSocket 实时流模态',
+    notes: '仅预留配置（未实测连通，WebSocket 实时流模态未接入）',
   },
   {
     modelId: 'gemini-3.5-transcribe-live',
@@ -123,7 +123,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 100,
     rpmReference: 5,
-    notes: '免费层级可用；实时音频输入模态',
+    notes: '仅预留配置（未实测连通，实时音频模态未接入）',
   },
   {
     modelId: 'gemini-3.5-live-translate-preview',
@@ -133,7 +133,7 @@ const FREE_TIER_MODELS: FreeModelSpec[] = [
     supportsDocumentPipeline: false,
     defaultDailyQuotaLimit: 100,
     rpmReference: 5,
-    notes: '免费层级可用；实时语音对语音模态',
+    notes: '仅预留配置（未实测连通，实时语音同传模态未接入）',
   },
 ];
 
@@ -341,8 +341,14 @@ function createGeminiClient(): GoogleGenAI {
   });
 }
 
-function buildThinkingConfig(modelId: string) {
+function buildThinkingConfig(
+  modelId: string,
+  taskType: 'layout' | 'translation' | 'verify' | 'reconstruct' | 'test' = 'translation'
+) {
   if (modelId === 'gemini-4-hydrogen') {
+    if (taskType === 'layout' || taskType === 'verify' || taskType === 'reconstruct') {
+      return { thinkingLevel: ThinkingLevel.MEDIUM };
+    }
     return { thinkingLevel: ThinkingLevel.LOW };
   }
   return undefined;
@@ -640,7 +646,7 @@ async function startServer() {
         model: requested,
         contents: 'Reply with exactly: OK',
         config: {
-          thinkingConfig: buildThinkingConfig(requested),
+          thinkingConfig: buildThinkingConfig(requested, 'test'),
         },
       });
       const durationMs = Date.now() - startTime;
@@ -732,7 +738,7 @@ async function startServer() {
             ],
           },
           config: {
-            thinkingConfig: buildThinkingConfig(targetModel),
+            thinkingConfig: buildThinkingConfig(targetModel, 'layout'),
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -874,7 +880,7 @@ async function startServer() {
           model: targetModel,
           contents: prompt,
           config: {
-            thinkingConfig: buildThinkingConfig(targetModel),
+            thinkingConfig: buildThinkingConfig(targetModel, 'translation'),
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -964,10 +970,8 @@ async function startServer() {
         '- 如果是 CAD_DRAWING / DIAGRAM：提取图中所有可辨识的尺寸标注、设备位号与注释文字，不编造任何不存在的尺寸。',
       ].join('\n');
 
-      const outcome = await executePipelineCall(modelId, !body?.model, (targetModel) => {
-        const verifyThinkingConfig =
-          targetModel === 'gemini-4-hydrogen' ? { thinkingLevel: ThinkingLevel.MEDIUM } : undefined;
-        return ai.models.generateContent({
+      const outcome = await executePipelineCall(modelId, !body?.model, (targetModel) =>
+        ai.models.generateContent({
           model: targetModel,
           contents: {
             parts: [
@@ -976,7 +980,7 @@ async function startServer() {
             ],
           },
           config: {
-            thinkingConfig: verifyThinkingConfig,
+            thinkingConfig: buildThinkingConfig(targetModel, 'verify'),
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -1006,8 +1010,8 @@ async function startServer() {
               required: ['confidence', 'needsReview'],
             },
           },
-        });
-      });
+        })
+      );
 
       const parsed = JSON.parse(outcome.text);
       res.json({
@@ -1114,7 +1118,7 @@ async function startServer() {
             ],
           },
           config: {
-            thinkingConfig: buildThinkingConfig(targetModel),
+            thinkingConfig: buildThinkingConfig(targetModel, 'reconstruct'),
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -1138,7 +1142,7 @@ async function startServer() {
                       items: {
                         type: Type.OBJECT,
                         properties: {
-                          label: { type: Type.STRING },
+                          label: textPairSchema,
                           xMeters: { type: Type.NUMBER },
                         },
                         required: ['label', 'xMeters'],
@@ -1172,7 +1176,7 @@ async function startServer() {
                         type: Type.OBJECT,
                         properties: {
                           xMeters: { type: Type.NUMBER },
-                          text: { type: Type.STRING },
+                          text: textPairSchema,
                         },
                         required: ['xMeters', 'text'],
                       },
@@ -1193,7 +1197,7 @@ async function startServer() {
                                 xStart: { type: Type.NUMBER },
                                 xEnd: { type: Type.NUMBER },
                                 xMeters: { type: Type.NUMBER },
-                                text: { type: Type.STRING },
+                                text: textPairSchema,
                                 color: { type: Type.STRING },
                               },
                               required: ['text'],
