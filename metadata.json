@@ -1,0 +1,8 @@
+{
+  "name": "GlobalCodeTrans",
+  "description": "面向跨境投资、设备贸易、工程建设与专业技术文档的多语种翻译与保真处理工作台。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
